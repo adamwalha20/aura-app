@@ -1,0 +1,33 @@
+
+Running 1 test using 1 worker
+
+  ???  1 [chromium] ??? tests\onboarding.spec.ts:9:3 ??? Aura Onboarding Flow ??? should complete the full signup and onboarding journey successfully (22.9s)
+
+
+  1) [chromium] ??? tests\onboarding.spec.ts:9:3 ??? Aura Onboarding Flow ??? should complete the full signup and onboarding journey successfully 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoBeVisible[2m([22m[2m)[22m failed
+
+    Locator: locator('text=LEVEL 1')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+    [2m  - Expect "toBeVisible" with timeout 5000ms[22m
+    [2m  - waiting for locator('text=LEVEL 1')[22m
+
+
+      59 |     // Verify user profile persistence
+      60 |     await expect(page.locator(`text=${testName}`)).toBeVisible();
+    > 61 |     await expect(page.locator('text=LEVEL 1')).toBeVisible();
+         |                                                ^
+      62 |     await expect(page.getByText(/XP/)).toBeVisible();
+      63 |   });
+      64 |
+        at C:\antigarvity Projects\aura app\tests\onboarding.spec.ts:61:48
+
+    Error Context: test-results\onboarding-Aura-Onboarding-cf5ed-arding-journey-successfully-chromium\error-context.md
+
+  1 failed
+    [chromium] ??? tests\onboarding.spec.ts:9:3 ??? Aura Onboarding Flow ??? should complete the full signup and onboarding journey successfully 
