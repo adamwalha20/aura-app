@@ -1,0 +1,69 @@
+{
+  "_comment": "These are the exact JSON payloads the Next.js frontend should send to the Next.js API Route, which then forwards them to the n8n Webhooks.",
+  "workflows": {
+    "vision_analysis": {
+      "description": "Triggered when user uploads a photo for skin or outfit analysis.",
+      "endpoint": "/api/webhook-trigger",
+      "method": "POST",
+      "payload": {
+        "action": "analyze_vision",
+        "userId": "123e4567-e89b-12d3-a456-426614174000",
+        "payload": {
+          "imageType": "skin_face",
+          "imageBase64": "data:image/jpeg;base64,/9j/4AAQSkZJRgABA...",
+          "context": "Morning routine check"
+        }
+      },
+      "expected_n8n_response": {
+        "success": true,
+        "metricId": "uuid-of-inserted-record",
+        "analysis": {
+          "hydration": 80,
+          "luminosity": 92,
+          "texture": "Smooth",
+          "recommendation": "Try a rosewater mist to maintain hydration."
+        }
+      }
+    },
+    "focus_tracker": {
+      "description": "Triggered when a user starts or ends a focus session.",
+      "endpoint": "/api/webhook-trigger",
+      "method": "POST",
+      "payload": {
+        "action": "focus_session_update",
+        "userId": "123e4567-e89b-12d3-a456-426614174000",
+        "payload": {
+          "sessionId": "optional-uuid-if-ending-session",
+          "eventType": "start", 
+          "focusType": "Deep Work",
+          "timestamp": "2026-04-07T13:00:00Z"
+        }
+      },
+      "expected_n8n_response": {
+        "success": true,
+        "sessionId": "uuid-of-session",
+        "status": "in_progress",
+        "message": "Focus session started successfully."
+      }
+    },
+    "ai_chat_assistant": {
+      "description": "Triggered when the user sends a message to the Aura chat assistant.",
+      "endpoint": "/api/webhook-trigger",
+      "method": "POST",
+      "payload": {
+        "action": "chat_message",
+        "userId": "123e4567-e89b-12d3-a456-426614174000",
+        "payload": {
+          "message": "How can I improve my sleep tonight?",
+          "threadId": "uuid-string-for-context-history",
+          "localTime": "2026-04-07T20:00:00Z"
+        }
+      },
+      "expected_n8n_response": {
+        "success": true,
+        "reply": "Based on your circadian rhythm, I recommend dimming the lights now and trying a 10-minute mindful breathing exercise.",
+        "suggestedActions": ["Start Breathing Exercise", "Log Sleep Intention"]
+      }
+    }
+  }
+}
