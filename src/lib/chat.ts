@@ -1,12 +1,20 @@
+import { supabase } from './supabase';
+
 const WEBHOOK_URL = import.meta.env.VITE_N8N_WEBHOOK_URL;
 
-export async function sendMessage(prompt: string, history: any[] = []) {
+export async function sendMessage(prompt: string, history: any[] = [], userId?: string) {
   if (!WEBHOOK_URL) {
     console.error("n8n Webhook URL is not set.");
     return "I am currently unable to connect to the sanctuary. Please check the configuration.";
   }
 
   try {
+    let contextString = "";
+    if (userId) {
+      const context = await fetchUserDailyContext(userId);
+      contextString = `\n[Context]: Goals(${context.profile?.goals?.join(', ')}), Skin(${context.profile?.skin_type}), Focus(${context.profile?.preferred_focus_time}). Rituals: ${context.rituals.filter((r:any) => r.completed).length}/${context.rituals.length} done today.`;
+    }
+
     const response = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: {
@@ -14,8 +22,9 @@ export async function sendMessage(prompt: string, history: any[] = []) {
         'ngrok-skip-browser-warning': 'true'
       },
       body: JSON.stringify({
-        message: prompt,
-        history: history
+        message: prompt + contextString,
+        history: history,
+        userId: userId
       }),
     });
 
@@ -92,5 +101,63 @@ export async function getRitualSuggestions(userId: string, profile: any) {
   } catch (error) {
     console.error("Ritual Generation Error (n8n):", error);
     return [];
+  }
+}
+
+export async function fetchUserDailyContext(userId: string) {
+  const today = new Date().toISOString().split('T')[0];
+  
+  const [ritualsRes, sessionsRes, profileRes] = await Promise.all([
+    supabase.from('daily_rituals').select('*').eq('user_id', userId).gte('created_at', today),
+    supabase.from('focus_sessions').select('*').eq('user_id', userId).gte('start_time', today),
+    supabase.from('users').select('*').eq('id', userId).single()
+  ]);
+
+  return {
+    rituals: ritualsRes.data || [],
+    sessions: sessionsRes.data || [],
+    profile: profileRes.data
+  };
+}
+
+export async function getTomorrowPlan(userId: string, profile: any) {
+  if (!WEBHOOK_URL) return null;
+
+  const context = await fetchUserDailyContext(userId);
+  const prompt = `Based on today's progress, analyze and generate a "Vision for Tomorrow" plan for the user:
+  - Today's Rituals: ${context.rituals.length} total, ${context.rituals.filter((r:any) => r.completed).length} completed.
+  - Focus Sessions: ${context.sessions.length} today.
+  - User Goals: ${profile.goals?.join(', ')}
+  
+  Return the plan in this JSON format:
+  {
+    "reflection": "Short motivating analysis of today",
+    "tomorrow_plan": {
+      "focus_blocks": ["Deep Work (9am-11am)", "Rest (2pm)"],
+      "rituals": ["Morning stretch", "Hydrate"],
+      "skin_advice": "Focus on hydration tonight"
+    }
+  }`;
+
+  try {
+    const response = await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+      body: JSON.stringify({ message: prompt, type: 'tomorrow_vision', userId })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+    let result = data.output || data.response || data;
+    
+    if (typeof result === 'string') {
+      const match = result.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      result = JSON.parse(match ? match[1] : result);
+    }
+    
+    return result;
+  } catch (e) {
+    console.error("Tomorrow Vision Error:", e);
+    return null;
   }
 }

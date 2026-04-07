@@ -82,7 +82,7 @@ export default function App() {
 
       {/* Main Content */}
       {activeTab === 'home' && <HomeTab userId={session.user.id} />}
-      {activeTab === 'chat' && <ChatTab />}
+      {activeTab === 'chat' && <ChatTab userId={session.user.id} />}
       {activeTab === 'insights' && <InsightsTab userId={session.user.id} />}
       {activeTab === 'profile' && <ProfileTab user={session.user} profile={profile} />}
 
@@ -187,6 +187,21 @@ const HomeTab = ({ userId }: { userId: string }) => {
     
     if (!error) {
       setRituals(prev => prev.map(r => r.id === ritualId ? { ...r, completed: !currentStatus } : r));
+      
+      // Award XP on completion
+      if (!currentStatus && profile) {
+        const newXp = (profile.xp || 0) + 15;
+        const newLevel = Math.floor(newXp / 100) + 1;
+        
+        const { data: updatedProfile } = await supabase
+          .from('users')
+          .update({ xp: newXp, level: newLevel })
+          .eq('id', userId)
+          .select()
+          .single();
+        
+        if (updatedProfile) setProfile(updatedProfile);
+      }
     }
   };
 
@@ -298,7 +313,7 @@ const HomeTab = ({ userId }: { userId: string }) => {
   );
 };
 
-const ChatTab = () => {
+const ChatTab = ({ userId }: { userId: string }) => {
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([
     { role: 'model', text: 'Peace be with you. How can I help you grow and find tranquility today?' }
   ]);
@@ -316,7 +331,7 @@ const ChatTab = () => {
     try {
       
       const { sendMessage } = await import('./lib/chat');
-      const response = await sendMessage(userMessage, messages);
+      const response = await sendMessage(userMessage, messages, userId);
       
       setMessages(prev => [...prev, { role: 'model', text: response }]);
     } catch (error) {
@@ -404,22 +419,52 @@ const InsightsTab = ({ userId }: { userId: string }) => {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newRitual, setNewRitual] = useState({ focus_type: 'Deep Work', start_time: '', duration: 30 });
+  
+  const [summary, setSummary] = useState<any>(null);
+  const [generating, setGenerating] = useState(false);
 
-  const fetchSessions = async () => {
+  const fetchInsights = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('focus_sessions')
-      .select('*')
-      .eq('user_id', userId)
-      .order('start_time', { ascending: true });
+    const today = new Date().toISOString().split('T')[0];
     
-    if (!error && data) setSessions(data);
+    const [sessionsRes, summaryRes] = await Promise.all([
+      supabase.from('focus_sessions').select('*').eq('user_id', userId).order('start_time', { ascending: true }),
+      supabase.from('daily_summaries').select('*').eq('user_id', userId).eq('summary_date', today).single()
+    ]);
+    
+    if (sessionsRes.data) setSessions(sessionsRes.data);
+    if (summaryRes.data) setSummary(summaryRes.data);
     setLoading(false);
   };
 
   useEffect(() => {
-    fetchSessions();
+    fetchInsights();
   }, [userId]);
+
+  const handlePrepareTomorrow = async () => {
+    setGenerating(true);
+    try {
+      const { data: profile } = await supabase.from('users').select('*').eq('id', userId).single();
+      const { getTomorrowPlan } = await import('./lib/chat');
+      const planResult = await getTomorrowPlan(userId, profile);
+      
+      if (planResult) {
+        const today = new Date().toISOString().split('T')[0];
+        const { data: savedSummary } = await supabase.from('daily_summaries').upsert({
+          user_id: userId,
+          summary_date: today,
+          reflection: planResult.reflection,
+          tomorrow_plan: planResult.tomorrow_plan
+        }).select().single();
+        
+        if (savedSummary) setSummary(savedSummary);
+      }
+    } catch (e) {
+      console.error("Preparation failed:", e);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleCreateRitual = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -433,7 +478,7 @@ const InsightsTab = ({ userId }: { userId: string }) => {
 
     if (!error) {
       setIsModalOpen(false);
-      fetchSessions();
+      fetchInsights();
     }
   };
 
@@ -557,26 +602,53 @@ const InsightsTab = ({ userId }: { userId: string }) => {
         <div className="lg:col-span-5 space-y-10">
           <div className="bg-surface-container-lowest p-8 rounded-xl shadow-sm border border-surface-container">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold font-headline text-on-surface">Top Priorities</h3>
+              <h3 className="text-xl font-bold font-headline text-on-surface">Tomorrow's Vision</h3>
+              <button 
+                onClick={handlePrepareTomorrow}
+                disabled={generating}
+                className="text-primary text-xs font-bold tracking-widest flex items-center gap-1 hover:underline disabled:opacity-50"
+              >
+                {generating ? 'BREWING...' : 'PREPARE FOR TOMORROW'}
+                {!generating && <span className="material-symbols-outlined text-sm">auto_awesome</span>}
+              </button>
             </div>
-            <ul className="space-y-4">
-              <li className="flex items-center gap-4 group">
-                <div className="w-6 h-6 rounded-md border-2 border-primary flex items-center justify-center cursor-pointer group-hover:bg-primary-fixed-dim transition-colors">
-                  <span className="material-symbols-outlined text-[16px] text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>check</span>
+            {summary ? (
+              <div className="space-y-6 animate-in fade-in duration-500">
+                <p className="text-sm italic text-on-surface-variant leading-relaxed">"{summary.reflection}"</p>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-[10px] font-bold tracking-widest text-primary uppercase mb-2">Suggested Focus</p>
+                    <div className="flex flex-wrap gap-2">
+                      {summary.tomorrow_plan.focus_blocks?.map((block: string, i: number) => (
+                        <span key={i} className="px-3 py-1 bg-primary/5 rounded-full text-xs font-medium text-primary">{block}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold tracking-widest text-primary uppercase mb-2">Self-Care Rituals</p>
+                    <ul className="text-xs text-on-surface-variant space-y-1">
+                      {summary.tomorrow_plan.rituals?.map((ritual: string, i: number) => (
+                        <li key={i} className="flex items-center gap-2">
+                          <span className="w-1 h-1 rounded-full bg-primary/40"></span>
+                          {ritual}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-on-surface-variant line-through">Morning Reflection</p>
-                </div>
-                <span className="material-symbols-outlined text-outline-variant text-lg">drag_indicator</span>
-              </li>
-              <li className="flex items-center gap-4 group">
-                <div className="w-6 h-6 rounded-md border-2 border-outline flex items-center justify-center cursor-pointer group-hover:bg-primary-fixed-dim transition-colors"></div>
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-on-surface">Plan the day with Aura</p>
-                </div>
-                <span className="material-symbols-outlined text-outline-variant text-lg">drag_indicator</span>
-              </li>
-            </ul>
+              </div>
+            ) : (
+              <div className="py-10 text-center border-2 border-dashed border-primary/5 rounded-2xl">
+                <span className="material-symbols-outlined text-primary/20 text-4xl mb-2">history_edu</span>
+                <p className="text-on-surface-variant text-sm font-medium">No plans brewed yet.</p>
+                <button 
+                  onClick={handlePrepareTomorrow}
+                  className="mt-4 px-6 py-2 bg-primary/10 text-primary rounded-full text-xs font-bold hover:bg-primary/20 transition-colors"
+                >
+                  Brew Tomorrow's Vision
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="bg-surface-container rounded-xl overflow-hidden relative aspect-square md:aspect-video lg:aspect-square group cursor-pointer shadow-inner">
