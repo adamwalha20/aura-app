@@ -2,17 +2,29 @@ import { supabase } from './supabase';
 
 const WEBHOOK_URL = import.meta.env.VITE_N8N_WEBHOOK_URL;
 
-export async function sendMessage(prompt: string, history: any[] = [], userId?: string) {
+export async function sendMessage(prompt: string, history: any[] = [], userId?: string, conversationId?: string) {
   if (!WEBHOOK_URL) {
     console.error("n8n Webhook URL is not set.");
     return "I am currently unable to connect to the sanctuary. Please check the configuration.";
   }
+
+  const bodyData: any = {
+    type: 'message', // Added type: message as requested
+    message: prompt,
+    history: history,
+    userId: userId,
+    threadId: conversationId // Map conversationId to threadId for n8n
+  };
 
   try {
     let contextString = "";
     if (userId) {
       const context = await fetchUserDailyContext(userId);
       contextString = `\n[Context]: Goals(${context.profile?.goals?.join(', ')}), Skin(${context.profile?.skin_type}), Focus(${context.profile?.preferred_focus_time}). Rituals: ${context.rituals.filter((r:any) => r.completed).length}/${context.rituals.length} done today.`;
+      
+      bodyData.message = prompt + contextString;
+      // Pass the real username for n8n database lookups and personalization
+      bodyData.userName = context.profile?.full_name || 'Aura Seeker';
     }
 
     const response = await fetch(WEBHOOK_URL, {
@@ -21,11 +33,7 @@ export async function sendMessage(prompt: string, history: any[] = [], userId?: 
         'Content-Type': 'application/json',
         'ngrok-skip-browser-warning': 'true'
       },
-      body: JSON.stringify({
-        message: prompt + contextString,
-        history: history,
-        userId: userId
-      }),
+      body: JSON.stringify(bodyData),
     });
 
     if (!response.ok) {
@@ -72,7 +80,8 @@ export async function getRitualSuggestions(userId: string, profile: any) {
       body: JSON.stringify({
         message: prompt,
         type: 'ritual_generation',
-        userId: userId
+        userId: userId,
+        userName: profile.full_name || 'Aura Seeker' // Include real username
       }),
     });
 
@@ -143,7 +152,12 @@ export async function getTomorrowPlan(userId: string, profile: any) {
     const response = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
-      body: JSON.stringify({ message: prompt, type: 'tomorrow_vision', userId })
+      body: JSON.stringify({ 
+        message: prompt, 
+        type: 'tomorrow_vision', 
+        userId,
+        userName: profile.full_name || 'Aura Seeker' // Include real username
+      })
     });
 
     if (!response.ok) return null;
@@ -160,4 +174,62 @@ export async function getTomorrowPlan(userId: string, profile: any) {
     console.error("Tomorrow Vision Error:", e);
     return null;
   }
+}
+export async function createNewConversation(userId: string, title?: string) {
+  const { data, error } = await supabase
+    .from('conversations')
+    .insert({ user_id: userId, title: title || 'New Conversation' })
+    .select()
+    .single();
+    
+  if (error) {
+    console.error("Error creating conversation:", error);
+    return null;
+  }
+  return data;
+}
+
+export async function getChatHistory(conversationId: string) {
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true });
+    
+  if (error) {
+    console.error("Error fetching chat history:", error);
+    return [];
+  }
+  return data.map(msg => ({
+    role: msg.role,
+    text: msg.content
+  }));
+}
+
+export async function saveChatMessage(conversationId: string, userId: string, role: 'user' | 'model', content: string) {
+  const { error } = await supabase
+    .from('chat_messages')
+    .insert({
+      conversation_id: conversationId,
+      user_id: userId,
+      role: role,
+      content: content
+    });
+    
+  if (error) {
+    console.error("Error saving chat message:", error);
+  }
+}
+export async function getUsersConversations(userId: string) {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+    
+  if (error) {
+    console.error("Error fetching conversations:", error);
+    return [];
+  }
+  return data;
 }

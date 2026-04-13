@@ -4,13 +4,14 @@ import { NextResponse } from 'next/server';
 interface WebhookRequest {
   action: 'analyze_vision' | 'focus_session_update' | 'chat_message';
   userId: string;
+  userName?: string; // Added userName for personalization
   payload: Record<string, any>;
 }
 
 export async function POST(request: Request) {
   try {
     const body: WebhookRequest = await request.json();
-    const { action, payload, userId } = body;
+    const { action, payload, userId, userName } = body;
 
     // 1. (Optional but Recommended) Verify user session via Supabase
     // In production, you should verify the user's JWT token here to ensure
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         action,
         userId,
+        userName: userName || 'Aura Seeker', // Forward the real username
         payload,
         timestamp: new Date().toISOString()
       })

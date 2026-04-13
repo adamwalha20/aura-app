@@ -314,24 +314,102 @@ const HomeTab = ({ userId }: { userId: string }) => {
 };
 
 const ChatTab = ({ userId }: { userId: string }) => {
-  const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([
-    { role: 'model', text: 'Peace be with you. How can I help you grow and find tranquility today?' }
-  ]);
+  const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  const loadConversation = async (convId: string) => {
+    setLoading(true);
+    const { getChatHistory } = await import('./lib/chat');
+    const history = await getChatHistory(convId);
+    setActiveConversationId(convId);
+    if (history.length > 0) {
+      setMessages(history);
+    } else {
+      setMessages([{ role: 'model', text: 'Peace be with you. How can I help you grow and find tranquility today?' }]);
+    }
+    setLoading(false);
+    setIsHistoryOpen(false);
+  };
+
+  const fetchConvs = async () => {
+    const { getUsersConversations } = await import('./lib/chat');
+    const data = await getUsersConversations(userId);
+    setConversations(data);
+  };
+
+
+  useEffect(() => {
+    const initChat = async () => {
+      setInitialLoading(true);
+      await fetchConvs();
+      
+      // 1. Try to find the most recent conversation
+      const { data: convs } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      let convId = convs?.[0]?.id;
+
+      // 2. If no conversation exists, create one
+      if (!convId) {
+        const { createNewConversation } = await import('./lib/chat');
+        const newConv = await createNewConversation(userId, 'First Conversation');
+        convId = newConv?.id;
+        await fetchConvs(); // Refresh list after creation
+      }
+
+      if (convId) {
+        await loadConversation(convId);
+      }
+      setInitialLoading(false);
+    };
+    initChat();
+  }, [userId]);
+
+
+  const handleNewConversation = async () => {
+    setLoading(true);
+    const { createNewConversation } = await import('./lib/chat');
+    const newConv = await createNewConversation(userId, `Chat ${new Date().toLocaleTimeString()}`);
+    if (newConv) {
+      setActiveConversationId(newConv.id);
+      setMessages([{ role: 'model', text: 'Peace be with you. How can I help you grow and find tranquility today?' }]);
+      await fetchConvs();
+    }
+    setLoading(false);
+  };
+
+
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || !activeConversationId) return;
 
     const userMessage = input.trim();
     setInput('');
+    
+    // Add to UI immediately
     setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
     setLoading(true);
 
     try {
+      const { sendMessage, saveChatMessage } = await import('./lib/chat');
       
-      const { sendMessage } = await import('./lib/chat');
-      const response = await sendMessage(userMessage, messages, userId);
+      // 1. Persist user message
+      await saveChatMessage(activeConversationId, userId, 'user', userMessage);
+
+      // 2. Get AI response
+      const response = await sendMessage(userMessage, messages, userId, activeConversationId);
+      
+      // 3. Persist AI response
+      await saveChatMessage(activeConversationId, userId, 'model', response);
       
       setMessages(prev => [...prev, { role: 'model', text: response }]);
     } catch (error) {
@@ -342,18 +420,88 @@ const ChatTab = ({ userId }: { userId: string }) => {
     }
   };
 
+
   return (
     <main className="min-h-screen pt-24 pb-48 px-6 max-w-4xl mx-auto flex flex-col">
-      <section className="mb-12">
-        <h2 className="font-headline text-4xl md:text-5xl font-bold text-primary tracking-tight leading-tight mb-4">
-          Let's nurture <br/>your inner glow.
-        </h2>
-        <p className="text-on-surface-variant tracking-wide max-w-md">
-          Your peaceful companion for growth, style, and mindful living.
-        </p>
+      <section className="mb-12 flex justify-between items-start">
+        <div>
+          <h2 className="font-headline text-4xl md:text-5xl font-bold text-primary tracking-tight leading-tight mb-4">
+            Let's nurture <br/>your inner glow.
+          </h2>
+          <p className="text-on-surface-variant tracking-wide max-w-md">
+            Your peaceful companion for growth, style, and mindful living.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => { setIsHistoryOpen(true); fetchConvs(); }}
+            className="flex items-center gap-2 px-4 py-3 bg-white text-on-surface rounded-full font-bold shadow-sm hover:bg-[#ebefec] transition-all border border-outline/10"
+          >
+            <span className="material-symbols-outlined">history</span>
+            History
+          </button>
+          <button 
+            onClick={handleNewConversation}
+            disabled={loading || initialLoading}
+            className="flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-full font-bold hover:scale-105 transition-all shadow-lg disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined">add</span>
+            New Chat
+          </button>
+        </div>
       </section>
 
-      <div className="flex-1 space-y-8 overflow-y-auto pb-10 custom-scrollbar">
+      {/* History Sidebar/Layer */}
+      {isHistoryOpen && (
+        <div className="fixed inset-0 z-[60] flex animate-in fade-in duration-300">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setIsHistoryOpen(false)}></div>
+          <div className="relative ml-auto w-full max-w-sm bg-surface h-full shadow-2xl animate-in slide-in-from-right duration-500 overflow-y-auto pt-24 px-6">
+            <div className="flex justify-between items-center mb-8">
+              <h3 className="text-2xl font-headline font-bold text-primary">Chat History</h3>
+              <button onClick={() => setIsHistoryOpen(false)} className="p-2 hover:bg-surface-container rounded-full">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="space-y-4">
+              {conversations.length > 0 ? conversations.map((conv) => (
+                <div 
+                  key={conv.id}
+                  onClick={() => loadConversation(conv.id)}
+                  className={`p-4 rounded-xl cursor-pointer transition-all border-2 ${
+                    activeConversationId === conv.id 
+                      ? 'bg-primary/5 border-primary' 
+                      : 'bg-surface-container-low border-transparent hover:bg-surface-container-high'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="font-bold text-sm truncate pr-2">{conv.title || 'Untitled Conversation'}</span>
+                    <span className="text-[10px] text-outline whitespace-nowrap">
+                      {new Date(conv.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-on-surface-variant line-clamp-1 opacity-70">
+                    Thread ID: ...{conv.id.slice(-6)}
+                  </p>
+                </div>
+              )) : (
+                <div className="py-20 text-center opacity-50">
+                  <span className="material-symbols-outlined text-4xl mb-2">history</span>
+                  <p className="text-sm">No previous conversations yet.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {initialLoading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin"></div>
+        </div>
+      ) : (
+        <div className="flex-1 space-y-8 overflow-y-auto pb-10 custom-scrollbar">
+
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-4 duration-500`}>
             {msg.role === 'model' && (
@@ -385,7 +533,7 @@ const ChatTab = ({ userId }: { userId: string }) => {
           </div>
         )}
       </div>
-
+      )}
       <div className="fixed bottom-32 left-0 w-full px-6 z-20">
         <div className="max-w-4xl mx-auto">
           <div className="bg-surface-container-highest/90 backdrop-blur-2xl p-2 rounded-[2rem] flex items-center gap-2 shadow-2xl ring-1 ring-black/5 border border-white/20">
