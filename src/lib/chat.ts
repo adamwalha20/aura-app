@@ -61,7 +61,7 @@ export async function getRitualSuggestions(userId: string, profile: any) {
     return [];
   }
 
-  const prompt = `Generate 3 personalized daily rituals for a user with these preferences:
+  const prompt = `Generate exactly 1 personalized daily ritual for a user with these preferences:
   - Goals: ${profile.goals?.join(', ')}
   - Skin Type: ${profile.skin_type}
   - Style Vibe: ${profile.style_vibe}
@@ -89,10 +89,20 @@ export async function getRitualSuggestions(userId: string, profile: any) {
       throw new Error(`Webhook responded with status ${response.status}`);
     }
 
-    const data = await response.json();
+    const text = await response.text();
+    if (!text) return [];
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      // If it's not JSON, it might be the raw string from n8n
+      data = text;
+    }
     
     // n8n might return the array directly or inside an output property
     let rituals = data.output || data.response || data;
+    
     if (typeof rituals === 'string') {
       try {
         // Strip markdown code blocks if present
@@ -101,11 +111,15 @@ export async function getRitualSuggestions(userId: string, profile: any) {
         rituals = JSON.parse(cleanJson);
       } catch (e) {
         console.error("Failed to parse ritual JSON:", rituals);
+        // Fallback: If it's a simple string, treat it as a single ritual
+        if (typeof rituals === 'string' && rituals.length > 5) {
+          return [{ text: rituals.trim(), time: "08:00 AM" }];
+        }
         return [];
       }
     }
 
-    return Array.isArray(rituals) ? rituals : [];
+    return Array.isArray(rituals) ? rituals : (rituals ? [rituals] : []);
 
   } catch (error) {
     console.error("Ritual Generation Error (n8n):", error);
@@ -220,6 +234,18 @@ export async function saveChatMessage(conversationId: string, userId: string, ro
     console.error("Error saving chat message:", error);
   }
 }
+
+export async function updateConversationTitle(conversationId: string, title: string) {
+  const { error } = await supabase
+    .from('conversations')
+    .update({ title: title })
+    .eq('id', conversationId);
+    
+  if (error) {
+    console.error("Error updating conversation title:", error);
+  }
+}
+
 export async function getUsersConversations(userId: string) {
   const { data, error } = await supabase
     .from('conversations')

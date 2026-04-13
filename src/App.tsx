@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
+import { awardXP, calculateLevelProgress } from './lib/xp';
+import { fetchWeather, WeatherData } from './lib/weather';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -71,20 +73,40 @@ export default function App() {
           <button className="p-2 hover:bg-[#ebefec] transition-colors rounded-full active:scale-95 duration-300">
             <span className="material-symbols-outlined text-[#4b664a]">menu</span>
           </button>
-          <h1 className="text-xl font-bold text-[#4b664a] tracking-tight font-headline">Aura AI</h1>
+          <div className="flex items-center gap-2">
+            <img src="/logo.png" alt="Aura Logo" className="w-10 h-10 object-contain mix-blend-multiply" />
+            <h1 className="text-xl font-bold text-[#4b664a] tracking-tight font-headline">Aura AI</h1>
+          </div>
         </div>
-        <div className="flex items-center">
-          <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-primary-container">
-            <img alt="User profile avatar" className="w-full h-full object-cover" src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.user_metadata.full_name || session.user.email}`} />
+        <div className="flex items-center gap-3">
+          {profile && (
+            <div className="hidden sm:flex flex-col items-end">
+              <span className="text-[10px] font-bold tracking-widest text-[#4b664a] uppercase opacity-60">Level {profile.level || 1}</span>
+              <span className="text-xs font-medium text-[#4b664a]/80 italic">{calculateLevelProgress(profile.xp || 0).tierName}</span>
+            </div>
+          )}
+          <div className="relative group cursor-pointer">
+            <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-primary-container bg-surface-container transition-transform group-hover:scale-105">
+              <img 
+                alt="User profile avatar" 
+                className="w-full h-full object-cover" 
+                src={profile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.user_metadata.full_name || session.user.email}`} 
+              />
+            </div>
+            {profile && (
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-[#4b664a] text-white rounded-full flex items-center justify-center text-[10px] font-bold border-2 border-white shadow-sm">
+                {profile.level || 1}
+              </div>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
       {activeTab === 'home' && <HomeTab userId={session.user.id} />}
-      {activeTab === 'chat' && <ChatTab userId={session.user.id} />}
-      {activeTab === 'insights' && <InsightsTab userId={session.user.id} />}
-      {activeTab === 'profile' && <ProfileTab user={session.user} profile={profile} />}
+      {activeTab === 'chat' && <ChatTab userId={session.user.id} onProfileUpdate={(p) => setProfile(p)} />}
+      {activeTab === 'insights' && <InsightsTab userId={session.user.id} onProfileUpdate={(p) => setProfile(p)} />}
+      {activeTab === 'profile' && <ProfileTab user={session.user} profile={profile} onProfileUpdate={(p) => setProfile(p)} />}
 
       {/* BottomNavBar */}
       <nav className="fixed bottom-0 left-0 w-full z-50 flex justify-around items-end px-8 pb-6 h-24 bg-[#f9faf8]/90 backdrop-blur-lg rounded-t-[3rem] shadow-[0_-8px_24px_-4px_rgba(46,52,50,0.04)]">
@@ -117,9 +139,19 @@ function NavButton({ icon, label, isActive, onClick }: { icon: string, label: st
 const HomeTab = ({ userId }: { userId: string }) => {
   const [feeds, setFeeds] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-
   const [rituals, setRituals] = useState<any[]>([]);
   const [profile, setProfile] = useState<any>(null);
+  const [currentMood, setCurrentMood] = useState<string | null>(null);
+  const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(true);
+  const [isGeneratingRitual, setIsGeneratingRitual] = useState(false);
+
+  const moods = [
+    { id: 'reflective', icon: 'auto_stories', label: 'Reflective', color: '#5e6c5b' },
+    { id: 'energetic', icon: 'bolt', label: 'Energetic', color: '#8e9c7c' },
+    { id: 'calm', icon: 'spa', label: 'Calm', color: '#aab4a2' },
+    { id: 'focused', icon: 'center_focus_strong', label: 'Focused', color: '#4b664a' },
+  ];
 
   useEffect(() => {
     const fetchHomeData = async () => {
@@ -141,7 +173,7 @@ const HomeTab = ({ userId }: { userId: string }) => {
       
       setProfile(profileData);
 
-      // 3. Fetch Rituals
+      // 3. Fetch Rituals - Filter for today
       const today = new Date().toISOString().split('T')[0];
       const { data: ritualData } = await supabase
         .from('daily_rituals')
@@ -150,34 +182,97 @@ const HomeTab = ({ userId }: { userId: string }) => {
         .gte('created_at', today)
         .order('created_at', { ascending: true });
       
-      if (ritualData && ritualData.length > 0) {
-        setRituals(ritualData);
-      } else if (profileData?.onboarding_completed) {
-        // Generate new rituals if missing
-        const { getRitualSuggestions } = await import('./lib/chat');
-        const suggestions = await getRitualSuggestions(userId, profileData);
-        
-        if (suggestions.length > 0) {
-          const insertData = suggestions.map((r: any) => ({
-            user_id: userId,
-            ritual_text: r.text,
-            time_label: r.time,
-            completed: false
-          }));
+      const currentRituals = ritualData || [];
+      setRituals(currentRituals);
 
-          const { data: newRituals } = await supabase
-            .from('daily_rituals')
-            .insert(insertData)
-            .select();
-          
-          if (newRituals) setRituals(newRituals);
-        }
+      // If no rituals exist at all for today, generate the first one
+      if (currentRituals.length === 0 && profileData?.onboarding_completed) {
+        triggerRitualGeneration(userId, profileData);
       }
+
+      // 4. Fetch Weather
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const w = await fetchWeather(pos.coords.latitude, pos.coords.longitude);
+          setWeather(w);
+          setWeatherLoading(false);
+        },
+        async () => {
+          const w = await fetchWeather(); // Default location
+          setWeather(w);
+          setWeatherLoading(false);
+        }
+      );
+
+      // 5. Fetch Today's Mood
+      const { data: moodData } = await supabase
+        .from('mood_logs')
+        .select('mood')
+        .eq('user_id', userId)
+        .gte('created_at', today)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      
+      if (moodData && moodData[0]) setCurrentMood(moodData[0].mood);
       
       setLoading(false);
     };
     fetchHomeData();
   }, [userId]);
+
+  const triggerRitualGeneration = async (uid: string, userProfile: any) => {
+    if (isGeneratingRitual) return;
+    setIsGeneratingRitual(true);
+    
+    try {
+      const { getRitualSuggestions } = await import('./lib/chat');
+      const suggestions = await getRitualSuggestions(uid, userProfile);
+      
+      if (suggestions && suggestions.length > 0) {
+        const newRitual = {
+          user_id: uid,
+          ritual_text: suggestions[0].text,
+          time_label: suggestions[0].time,
+          completed: false
+        };
+
+        const { data: inserted } = await supabase
+          .from('daily_rituals')
+          .insert(newRitual)
+          .select();
+        
+        if (inserted) {
+          setRituals(prev => [...prev, ...inserted]);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to generate ritual:", err);
+    } finally {
+      setIsGeneratingRitual(false);
+    }
+  };
+
+  const handleMoodSelect = async (moodId: string) => {
+    const today = new Date().toISOString().split('T')[0];
+    const { data: existingMood } = await supabase
+      .from('mood_logs')
+      .select('id')
+      .eq('user_id', userId)
+      .gte('created_at', today);
+
+    const { error } = await supabase
+      .from('mood_logs')
+      .insert({ user_id: userId, mood: moodId });
+    
+    if (!error) {
+      setCurrentMood(moodId);
+      // Award XP only for the first mood check-in of the day
+      if (!existingMood || existingMood.length === 0) {
+        const updatedProfile = await awardXP(userId, 5);
+        if (updatedProfile) setProfile(updatedProfile);
+      }
+    }
+  };
 
   const toggleRitual = async (ritualId: string, currentStatus: boolean) => {
     const { error } = await supabase
@@ -186,24 +281,24 @@ const HomeTab = ({ userId }: { userId: string }) => {
       .eq('id', ritualId);
     
     if (!error) {
-      setRituals(prev => prev.map(r => r.id === ritualId ? { ...r, completed: !currentStatus } : r));
+      const updatedStatus = !currentStatus;
+      setRituals(prev => prev.map(r => r.id === ritualId ? { ...r, completed: updatedStatus } : r));
       
-      // Award XP on completion
-      if (!currentStatus && profile) {
-        const newXp = (profile.xp || 0) + 15;
-        const newLevel = Math.floor(newXp / 100) + 1;
-        
-        const { data: updatedProfile } = await supabase
-          .from('users')
-          .update({ xp: newXp, level: newLevel })
-          .eq('id', userId)
-          .select()
-          .single();
-        
+      if (updatedStatus && profile) {
+        // 1. Award XP
+        const updatedProfile = await awardXP(userId, 15);
         if (updatedProfile) setProfile(updatedProfile);
+
+        // 2. Generate the next mission if all current ones are done
+        // Since we generate one by one, completing one means we should brew the next.
+        triggerRitualGeneration(userId, profile);
       }
     }
   };
+
+  const ritualsCompletedCount = rituals.filter(r => r.completed).length;
+  const ritualsTotal = rituals.length || 1;
+  const progressPercent = (ritualsCompletedCount / ritualsTotal) * 100;
 
   const defaultFeed = {
     outfit_image_url: 'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?q=80&w=1000&auto=format&fit=crop',
@@ -215,31 +310,136 @@ const HomeTab = ({ userId }: { userId: string }) => {
   const rawFeed = feeds[0];
   const currentFeed = rawFeed?.content || defaultFeed;
 
+  const getGreeting = () => {
+    if (currentMood === 'energetic') return 'Fuel that energy ⚡';
+    if (currentMood === 'reflective') return 'Breathe in clarity 📖';
+    if (currentMood === 'calm') return 'Stay in the flow 🌊';
+    if (currentMood === 'focused') return 'Sharp and steady 🎯';
+    return 'Good morning 🌿';
+  };
+
   return (
     <main className="pt-24 px-6 max-w-5xl mx-auto pb-32">
-      <section className="mb-10">
-        <h2 className="text-4xl md:text-5xl font-headline font-bold text-on-background tracking-tight mb-2">Good morning 🌿</h2>
-        <p className="text-on-surface-variant font-body tracking-wide">The air is fresh today. Ready to align your day?</p>
+      <section className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h2 className="text-4xl md:text-5xl font-headline font-bold text-on-background tracking-tight mb-2">
+            {getGreeting()}
+          </h2>
+          <p className="text-on-surface-variant font-body tracking-wide flex items-center gap-2">
+            {profile?.full_name?.split(' ')[0] || 'Seeker'}, your path is clear.
+          </p>
+          {profile && (
+            <div className="mt-4 flex items-center gap-3">
+              <div className="w-48 h-1 bg-surface-container rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-primary transition-all duration-1000" 
+                  style={{ width: `${calculateLevelProgress(profile.xp).progressPercentage}%` }}
+                ></div>
+              </div>
+              <span className="text-[10px] font-bold text-primary tracking-widest uppercase">
+                {calculateLevelProgress(profile.xp).currentXpInLevel} / {calculateLevelProgress(profile.xp).nextLevelXp} XP TO LEVEL {(profile.level || 1) + 1}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col items-end gap-2">
+          <p className="text-[10px] font-bold tracking-[0.2em] text-on-surface-variant uppercase opacity-60">Today's Vibe</p>
+          <div className="flex gap-2">
+            {moods.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => handleMoodSelect(m.id)}
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-300 shadow-sm ${
+                  currentMood === m.id 
+                    ? 'bg-primary text-white scale-110 shadow-lg shadow-primary/20' 
+                    : 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high'
+                }`}
+              >
+                <span className="material-symbols-outlined text-2xl" style={{ fontVariationSettings: currentMood === m.id ? "'FILL' 1" : "" }}>
+                  {m.icon}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-        <div className="md:col-span-4 bg-surface-container rounded-xl overflow-hidden flex flex-col group cursor-pointer transition-transform duration-300 active:scale-[0.98]">
-          <div className="relative h-80 w-full">
-            <img alt="Outfit suggestion" className="w-full h-full object-cover" src={currentFeed.outfit_image_url} />
-            <div className="absolute inset-0 bg-gradient-to-t from-on-background/60 to-transparent"></div>
-            <div className="absolute bottom-6 left-6 text-white">
-              <span className="bg-primary/20 backdrop-blur-md px-3 py-1 rounded-full text-xs font-medium mb-2 inline-block">Personal Style</span>
-              <h3 className="text-xl font-bold font-headline">Daily Look</h3>
-            </div>
+        {/* Aura Pulse Visual */}
+        <div className="md:col-span-12 lg:col-span-8 bg-surface-container-lowest rounded-3xl p-8 flex flex-col md:flex-row items-center justify-between gap-8 border border-primary/5 shadow-inner">
+          <div className="flex-1 space-y-4 text-center md:text-left">
+            <span className="inline-block px-3 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full tracking-widest uppercase">Spirit Pulse</span>
+            <h3 className="text-2xl font-bold font-headline">Your Inner Rhythm</h3>
+            <p className="text-on-surface-variant text-sm leading-relaxed max-w-md">
+              Your daily aura is {Math.round(progressPercent)}% aligned. Complete your rituals to synchronize with the sanctuary.
+            </p>
           </div>
-          <div className="p-6">
-            <p className="text-on-surface-variant text-sm leading-relaxed mb-4">{currentFeed.outfit_desc}</p>
-            <button className="w-full py-3 bg-primary text-on-primary rounded-full font-semibold text-sm transition-all hover:opacity-90">View Details</button>
+          <div className="relative w-48 h-48 flex items-center justify-center">
+             {/* Pulsing Circles */}
+             <div className="absolute inset-0 bg-primary/5 rounded-full animate-ping opacity-20" style={{ animationDuration: '3s' }}></div>
+             <div className="absolute inset-4 bg-primary/10 rounded-full animate-ping opacity-40" style={{ animationDuration: '4s' }}></div>
+             <div className="relative w-32 h-32 rounded-full border-2 border-primary/20 flex items-center justify-center bg-surface backdrop-blur-sm shadow-xl">
+                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="4" className="text-primary/5" />
+                  <circle 
+                    cx="50" cy="50" r="45" fill="none" stroke="currentColor" strokeWidth="4" 
+                    className="text-primary transition-all duration-1000"
+                    strokeDasharray="282.7"
+                    strokeDashoffset={282.7 - (282.7 * progressPercent) / 100}
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="material-symbols-outlined text-primary text-3xl animate-pulse">energy_savings_leaf</span>
+                </div>
+             </div>
           </div>
         </div>
 
-        <div className="md:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-surface-container-low rounded-xl p-6 flex flex-col justify-between hover:bg-surface-container-high transition-colors">
+        {/* Weather Card */}
+        <div className="md:col-span-6 lg:col-span-4 bg-primary text-white rounded-3xl p-8 relative overflow-hidden shadow-2xl shadow-primary/20">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+          {weatherLoading ? (
+            <div className="h-full flex flex-col justify-center items-center gap-4 py-6">
+              <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
+              <p className="text-xs font-bold tracking-widest opacity-60 uppercase">Sense of Sky...</p>
+            </div>
+          ) : (
+            <div className="relative z-10 h-full flex flex-col justify-between">
+              <div className="flex justify-between items-start">
+                 <div>
+                   <span className="text-[10px] font-bold tracking-[0.2em] opacity-60 uppercase mb-1 block">Sanctuary Weather</span>
+                   <p className="text-lg font-bold">{weather?.condition}</p>
+                 </div>
+                 <span className="material-symbols-outlined text-4xl opacity-80">{weather?.icon}</span>
+              </div>
+              <div className="mt-8 flex items-end gap-2">
+                <h4 className="text-6xl font-headline font-bold leading-none">{weather?.temp}°</h4>
+                <div className="mb-1">
+                  <p className="text-xs font-bold opacity-60 uppercase">Humidity</p>
+                  <p className="text-sm font-bold">{weather?.humidity}%</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="md:col-span-6 lg:col-span-4 bg-surface-container rounded-xl overflow-hidden flex flex-col group cursor-pointer transition-transform duration-300 active:scale-[0.98]">
+          <div className="relative h-64 w-full">
+            <img alt="Outfit suggestion" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" src={currentFeed.outfit_image_url} />
+            <div className="absolute inset-0 bg-gradient-to-t from-on-background/60 to-transparent"></div>
+            <div className="absolute bottom-6 left-6 text-white">
+              <span className="bg-primary/20 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-bold mb-2 inline-block tracking-widest uppercase">Daily Look</span>
+              <h3 className="text-lg font-bold font-headline">Linen Layers</h3>
+            </div>
+          </div>
+          <div className="p-6">
+            <p className="text-on-surface-variant text-xs leading-relaxed">{currentFeed.outfit_desc}</p>
+          </div>
+        </div>
+
+        <div className="md:col-span-6 lg:col-span-4 bg-surface-container-low rounded-xl p-6 flex flex-col justify-between hover:bg-surface-container-high transition-colors">
             <div>
               <div className="flex justify-between items-start mb-4">
                 <div className="p-3 bg-secondary-container rounded-lg">
@@ -247,73 +447,55 @@ const HomeTab = ({ userId }: { userId: string }) => {
                 </div>
                 <span className="text-[11px] font-bold tracking-widest text-tertiary uppercase">Nutrition</span>
               </div>
-              <h3 className="text-xl font-bold font-headline mb-2">Morning Fuel</h3>
-              <p className="text-on-surface-variant text-sm mb-4">{currentFeed.meal_desc}</p>
+              <h3 className="text-lg font-bold font-headline mb-2">Morning Fuel</h3>
+              <p className="text-on-surface-variant text-xs mb-4 line-clamp-2 md:line-clamp-none">{currentFeed.meal_desc}</p>
             </div>
-            <div className="rounded-lg overflow-hidden h-32 mb-4">
+            <div className="rounded-lg overflow-hidden h-24 mb-4">
               <img alt="Green smoothie bowl" className="w-full h-full object-cover" src={currentFeed.meal_image_url} />
             </div>
-            <div className="flex items-center gap-2 text-primary font-bold text-sm">
-              <span>Recipe details</span>
+            <div className="flex items-center gap-2 text-primary font-bold text-xs">
+              <span>View Recipe</span>
               <span className="material-symbols-outlined text-sm">arrow_forward</span>
             </div>
-          </div>
+        </div>
 
-          <div className="bg-tertiary-container/30 backdrop-blur-sm rounded-xl p-6 border border-white/10">
-            <div className="flex items-center gap-3 mb-6">
-              <span className="material-symbols-outlined text-tertiary">wb_sunny</span>
-              <span className="text-xs font-bold tracking-widest text-tertiary uppercase">Self Care</span>
-            </div>
-            <h3 className="text-xl font-bold font-headline mb-3">Sunscreen Reminder</h3>
-            <p className="text-on-surface-variant text-sm leading-relaxed mb-6">UV index is climbing to 6 today. Apply your SPF 50 before heading to the workspace.</p>
-            <div className="bg-white/50 rounded-lg p-4 flex items-center gap-4">
-              <div className="w-2 h-12 bg-tertiary rounded-full"></div>
-              <div>
-                <p className="text-xs font-bold text-tertiary">CURRENT UV</p>
-                <p className="text-lg font-bold">Moderate (4)</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="md:col-span-2 bg-surface-container-lowest rounded-xl p-8 shadow-[0_8px_24px_-4px_rgba(46,52,50,0.04)]">
+        <div className="md:col-span-6 lg:col-span-4 bg-surface-container-lowest rounded-xl p-8 shadow-[0_8px_24px_-4px_rgba(46,52,50,0.04)]">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="text-2xl font-bold font-headline">Today's Rituals</h3>
-              <button className="text-primary material-symbols-outlined">add_circle</button>
+              <h3 className="text-xl font-bold font-headline">Rituals</h3>
+              <span className="text-[10px] font-bold text-primary px-2 py-1 bg-primary/5 rounded-full">{ritualsCompletedCount}/{ritualsTotal}</span>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               {rituals.length > 0 ? rituals.map((ritual) => (
                 <div 
                   key={ritual.id} 
                   onClick={() => toggleRitual(ritual.id, ritual.completed)}
-                  className={`flex items-center gap-4 p-4 rounded-lg group cursor-pointer transition-all ${
-                    ritual.completed ? 'bg-primary/5 opacity-60' : 'bg-surface-container-low/50 hover:bg-surface-container-low'
+                  className={`flex items-center gap-3 p-3 rounded-xl group cursor-pointer transition-all ${
+                    ritual.completed ? 'bg-primary/5 opacity-50' : 'bg-surface-container-low/50 hover:bg-surface-container-low'
                   }`}
                 >
-                  <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
                     ritual.completed ? 'bg-primary border-primary' : 'border-primary-fixed-dim group-hover:bg-primary-fixed'
                   }`}>
-                    {ritual.completed && <span className="material-symbols-outlined text-[14px] text-white font-bold">check</span>}
+                    {ritual.completed && <span className="material-symbols-outlined text-[12px] text-white font-bold">check</span>}
                   </div>
-                  <span className={`text-on-surface font-medium ${ritual.completed ? 'line-through decoration-primary/30' : ''}`}>
+                  <span className={`text-on-surface text-xs font-medium ${ritual.completed ? 'line-through decoration-primary/30' : ''}`}>
                     {ritual.ritual_text}
                   </span>
-                  <span className="ml-auto text-xs text-on-surface-variant font-bold tracking-wider">{ritual.time_label}</span>
                 </div>
               )) : (
-                <div className="py-8 text-center border-2 border-dashed border-primary/10 rounded-2xl">
-                  <span className="material-symbols-outlined text-primary/30 text-4xl mb-2">auto_awesome</span>
-                  <p className="text-on-surface-variant text-sm font-medium">Brewing your morning rituals...</p>
+                <div className="py-6 text-center border-2 border-dashed border-primary/10 rounded-2xl">
+                  <span className="material-symbols-outlined text-primary/30 text-2xl mb-1">auto_awesome</span>
+                  <p className="text-on-surface-variant text-[10px] font-medium uppercase tracking-widest">Brewing...</p>
                 </div>
               )}
             </div>
-          </div>
         </div>
       </div>
     </main>
   );
 };
 
-const ChatTab = ({ userId }: { userId: string }) => {
+const ChatTab = ({ userId, onProfileUpdate }: { userId: string, onProfileUpdate?: (p: any) => void }) => {
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<any[]>([]);
@@ -361,7 +543,7 @@ const ChatTab = ({ userId }: { userId: string }) => {
       // 2. If no conversation exists, create one
       if (!convId) {
         const { createNewConversation } = await import('./lib/chat');
-        const newConv = await createNewConversation(userId, 'First Conversation');
+        const newConv = await createNewConversation(userId, 'New Conversation');
         convId = newConv?.id;
         await fetchConvs(); // Refresh list after creation
       }
@@ -378,7 +560,7 @@ const ChatTab = ({ userId }: { userId: string }) => {
   const handleNewConversation = async () => {
     setLoading(true);
     const { createNewConversation } = await import('./lib/chat');
-    const newConv = await createNewConversation(userId, `Chat ${new Date().toLocaleTimeString()}`);
+    const newConv = await createNewConversation(userId, 'New Conversation');
     if (newConv) {
       setActiveConversationId(newConv.id);
       setMessages([{ role: 'model', text: 'Peace be with you. How can I help you grow and find tranquility today?' }]);
@@ -405,6 +587,14 @@ const ChatTab = ({ userId }: { userId: string }) => {
       // 1. Persist user message
       await saveChatMessage(activeConversationId, userId, 'user', userMessage);
 
+      // Check if this is the first user message (messages only had the initial model greeting)
+      if (messages.length === 1 && messages[0].role === 'model') {
+        const { updateConversationTitle } = await import('./lib/chat');
+        const title = userMessage.length > 30 ? userMessage.substring(0, 27) + '...' : userMessage;
+        await updateConversationTitle(activeConversationId, title);
+        fetchConvs(); // Refresh the conversation history list
+      }
+
       // 2. Get AI response
       const response = await sendMessage(userMessage, messages, userId, activeConversationId);
       
@@ -412,6 +602,12 @@ const ChatTab = ({ userId }: { userId: string }) => {
       await saveChatMessage(activeConversationId, userId, 'model', response);
       
       setMessages(prev => [...prev, { role: 'model', text: response }]);
+
+      // Award XP for chatting (5 XP)
+      const updatedProfile = await awardXP(userId, 5);
+      if (updatedProfile && onProfileUpdate) {
+        onProfileUpdate(updatedProfile);
+      }
     } catch (error) {
       console.error('Chat Error:', error);
       setMessages(prev => [...prev, { role: 'model', text: 'I apologize, but my connection to the sanctuary is momentarily weak. Let us breathe together and try again.' }]);
@@ -562,7 +758,7 @@ const ChatTab = ({ userId }: { userId: string }) => {
   );
 };
 
-const InsightsTab = ({ userId }: { userId: string }) => {
+const InsightsTab = ({ userId, onProfileUpdate }: { userId: string, onProfileUpdate?: (p: any) => void }) => {
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -627,6 +823,11 @@ const InsightsTab = ({ userId }: { userId: string }) => {
     if (!error) {
       setIsModalOpen(false);
       fetchInsights();
+      // Award XP for starting a ritual (10 XP)
+      const updatedProfile = await awardXP(userId, 10);
+      if (updatedProfile && onProfileUpdate) {
+        onProfileUpdate(updatedProfile);
+      }
     }
   };
 
@@ -823,9 +1024,11 @@ const getLevelTitle = (level: number) => {
   return 'Radiant';
 };
 
-const ProfileTab = ({ user, profile }: { user: any, profile: any }) => {
+const ProfileTab = ({ user, profile, onProfileUpdate }: { user: any, profile: any, onProfileUpdate: (p: any) => void }) => {
   const [metrics, setMetrics] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const fetchMetrics = async () => {
@@ -847,6 +1050,50 @@ const ProfileTab = ({ user, profile }: { user: any, profile: any }) => {
     await supabase.auth.signOut();
   };
 
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Image size must be less than 2MB');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      const { data: updatedProfile, error: updateError } = await supabase
+        .from('users')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user.id)
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      
+      if (updatedProfile) {
+        onProfileUpdate(updatedProfile);
+      }
+    } catch (error: any) {
+      console.error('Upload Error:', error.message);
+      alert('Failed to upload image. Please try again.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const displayMetrics = metrics?.data || {
     overall_score: 85,
     skin_health: 92,
@@ -855,14 +1102,36 @@ const ProfileTab = ({ user, profile }: { user: any, profile: any }) => {
 
   return (
     <main className="pt-24 px-6 max-w-2xl mx-auto space-y-10 pb-32">
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleFileChange} 
+        className="hidden" 
+        accept="image/*" 
+      />
       <section className="flex flex-col items-center text-center space-y-4">
-        <div className="relative">
-          <div className="w-32 h-32 rounded-full p-1 bg-gradient-to-tr from-primary to-primary-container">
-            <div className="w-full h-full rounded-full border-4 border-surface overflow-hidden">
-              <img alt="Profile large" className="w-full h-full object-cover" src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user.user_metadata.full_name || user.email}`} />
+        <div className="relative group">
+          <div className="w-32 h-32 rounded-full p-1 bg-gradient-to-tr from-primary to-primary-container relative">
+            <div className="w-full h-full rounded-full border-4 border-surface overflow-hidden bg-surface-container">
+              <img 
+                alt="Profile large" 
+                className="w-full h-full object-cover" 
+                src={profile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.user_metadata.full_name || user.email}`} 
+              />
             </div>
+            {uploading && (
+              <div className="absolute inset-0 bg-surface/60 backdrop-blur-sm rounded-full flex items-center justify-center">
+                <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin"></div>
+              </div>
+            )}
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="absolute inset-0 bg-on-surface/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-full text-white"
+            >
+              <span className="material-symbols-outlined text-3xl">photo_camera</span>
+            </button>
           </div>
-          <div className="absolute -bottom-2 right-0 bg-primary text-white rounded-full px-4 py-1 text-xs font-bold tracking-widest shadow-lg flex items-center gap-2">
+          <div className="absolute -bottom-2 right-0 bg-primary text-white rounded-full px-4 py-1 text-xs font-bold tracking-widest shadow-lg flex items-center gap-2 z-10">
             <span>LEVEL {profile?.level || 1}</span>
             <span className="w-1.5 h-1.5 rounded-full bg-white/40"></span>
             <span>{profile?.xp || 0} XP</span>
@@ -875,17 +1144,70 @@ const ProfileTab = ({ user, profile }: { user: any, profile: any }) => {
       </section>
 
       <section className="grid grid-cols-2 gap-4">
+        {/* Growth & Leveling System */}
+        {profile && (
+          <div className="col-span-2 bg-[#4b664a] text-white rounded-[2.5rem] p-10 relative overflow-hidden shadow-2xl shadow-[#4b664a]/20 mb-6">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl"></div>
+            
+            <div className="relative z-10">
+              <div className="flex justify-between items-start mb-8">
+                <div>
+                  <span className="text-[10px] font-bold tracking-[0.2em] opacity-60 uppercase mb-2 block">Current Ascension</span>
+                  <h3 className="text-4xl font-headline font-bold mb-2">{calculateLevelProgress(profile.xp).tierName}</h3>
+                  <p className="text-white/60 text-sm italic">"Your aura continues to brighten."</p>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-20 h-20 rounded-full bg-white/10 flex flex-col items-center justify-center border border-white/20 backdrop-blur-md">
+                    <span className="text-[10px] uppercase tracking-widest opacity-60 font-bold">Level</span>
+                    <span className="text-3xl font-bold leading-none">{profile.level || 1}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-end text-sm">
+                  <span className="font-bold tracking-wider opacity-80 uppercase text-[11px]">Spirit Progress</span>
+                  <span className="font-medium opacity-60">{calculateLevelProgress(profile.xp).currentXpInLevel} / {calculateLevelProgress(profile.xp).nextLevelXp} XP</span>
+                </div>
+                <div className="h-4 bg-white/10 rounded-full overflow-hidden p-1 border border-white/5">
+                  <div 
+                    className="h-full bg-white rounded-full transition-all duration-1000 ease-out shadow-[0_0_12px_rgba(255,255,255,0.4)]"
+                    style={{ width: `${calculateLevelProgress(profile.xp).progressPercentage}%` }}
+                  ></div>
+                </div>
+                <div className="flex justify-between text-[10px] font-bold tracking-widest opacity-40 uppercase pt-2">
+                  <span>Level {profile.level}</span>
+                  <span>Level {(profile.level || 1) + 1}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="col-span-2 bg-surface-container-low p-8 rounded-xl flex items-center justify-between">
           <div className="space-y-1">
             <span className="text-xs uppercase tracking-widest text-outline font-bold">Health Score</span>
             <p className="text-3xl font-headline font-bold text-on-background">{displayMetrics.overall_score}%</p>
           </div>
-          <div className="w-16 h-16 rounded-full border-4 border-primary/20 flex items-center justify-center relative">
-            <svg className="w-full h-full transform -rotate-90">
-              <circle className="text-primary-container" cx="32" cy="32" fill="transparent" r="28" stroke="currentColor" strokeWidth="4"></circle>
-              <circle className="text-primary" cx="32" cy="32" fill="transparent" r="28" stroke="currentColor" strokeDasharray="175" strokeDashoffset={`${175 - (175 * displayMetrics.overall_score) / 100}`} strokeWidth="4"></circle>
+          <div className="w-16 h-16 rounded-full border-4 border-primary/10 flex items-center justify-center relative bg-primary/5">
+            <svg className="w-full h-full transform -rotate-90 scale-110" viewBox="0 0 64 64">
+              <circle className="text-transparent" cx="32" cy="32" fill="transparent" r="28" stroke="currentColor" strokeWidth="4"></circle>
+              <circle 
+                className="text-primary" 
+                cx="32" 
+                cy="32" 
+                fill="transparent" 
+                r="28" 
+                stroke="currentColor" 
+                strokeDasharray="175.9" 
+                strokeDashoffset={175.9 - (175.9 * displayMetrics.overall_score) / 100} 
+                strokeWidth="4" 
+                strokeLinecap="round"
+              ></circle>
             </svg>
-            <span className="absolute material-symbols-outlined text-primary">favorite</span>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="material-symbols-outlined text-primary text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>favorite</span>
+            </div>
           </div>
         </div>
         <div className="bg-surface-container p-6 rounded-lg space-y-4">
@@ -996,8 +1318,8 @@ function AuthView() {
 
       <div className="w-full max-w-md bg-white/40 backdrop-blur-3xl p-10 rounded-[3rem] shadow-2xl border border-white/20 z-10">
         <div className="text-center mb-10">
-          <div className="w-20 h-20 bg-[#4b664a]/10 backdrop-blur-xl rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
-            <span className="material-symbols-outlined text-4xl text-[#4b664a] animate-pulse" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span>
+          <div className="w-20 h-20 bg-[#4b664a]/10 backdrop-blur-xl rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner overflow-hidden uppercase">
+            <img src="/logo.png" alt="Aura Logo" className="w-14 h-14 object-contain mix-blend-multiply" />
           </div>
           <h2 className="text-4xl font-headline font-extrabold text-[#4b664a] tracking-tight mb-2">Aura</h2>
           <p className="text-[#5a605e] font-body">Begin your journey to a balanced life.</p>
